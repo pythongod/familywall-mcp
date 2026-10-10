@@ -6,7 +6,9 @@ import datetime
 import re
 import uuid
 from datetime import date, timedelta
+from datetime import datetime as datetime_
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
@@ -20,6 +22,7 @@ from familywall_mcp.familywall.lists import ListItem
 from familywall_mcp.interfaces import ReceiptRepository
 from familywall_mcp.models import DomainModel, Principal
 from familywall_mcp.services.calendar import CalendarService, NewAllDayEvent, NewTimedEvent
+from familywall_mcp.services.calendar_writes import CalendarWriteService
 from familywall_mcp.services.lists import ListService
 from familywall_mcp.services.members import (
     MemberSelectionError,
@@ -178,6 +181,14 @@ class SetCalendarEventAttendeesResponse(DomainModel):
     mismatched_fields: tuple[str, ...] = ()
 
 
+class CalendarEventWriteResponse(DomainModel):
+    """Response from update_calendar_event and delete_calendar_event."""
+
+    family_name: str
+    outcome: str
+    event_id: str | None
+
+
 class ErrorResponse(DomainModel):
     """Safe error response from any tool."""
 
@@ -332,6 +343,34 @@ class ToolRegistry:
             ),
             annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False),
         )(self._set_calendar_event_attendees)
+
+        server.tool(
+            name="update_calendar_event",
+            description=(
+                "Change the title, time, location or description of a single, "
+                "non-recurring calendar event, by its occurrence_id. Only the given "
+                "fields change; reminders, attendees and everything else stay as they "
+                "are. For a timed event give start/end as local 'YYYY-MM-DDTHH:MM'; "
+                "for an all-day event as 'YYYY-MM-DD'. A new start without a new end "
+                "moves the event and keeps its length. An empty string clears the "
+                "location or description. reminders replaces all reminders (values like "
+                "'30 minutes', '1 day'; an empty list removes them). Events in a "
+                "recurring series are refused without being touched."
+            ),
+            annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False),
+        )(self._update_calendar_event)
+
+        server.tool(
+            name="delete_calendar_event",
+            description=(
+                "Delete a single, non-recurring calendar event. Takes the event's "
+                "occurrence_id from get_week_overview and the day it is on "
+                "('YYYY-MM-DD'). Events that belong to a recurring series are refused "
+                "without being touched, because the delete could remove the entire "
+                "series."
+            ),
+            annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True),
+        )(self._delete_calendar_event)
 
     async def _get_connection_status(self) -> ConnectionStatusResponse | ErrorResponse:
         """Get the connection status and authenticated member's timezone.
@@ -903,6 +942,124 @@ class ToolRegistry:
                 error_recovery=exc.info.recovery,
             )
 
+    async def _update_calendar_event(
+        self,
+        event_id: str,
+        title: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        location: str | None = None,
+        description: str | None = None,
+        reminders: list[str] | None = None,
+        idempotency_key: str | None = None,
+    ) -> CalendarEventWriteResponse | ErrorResponse:
+        """Change fields of one single, non-recurring family calendar event.
+
+        If writes are disabled, returns an error response with zero upstream calls.
+        """
+        if not self._config.enable_writes:
+            return ErrorResponse(
+                error_code="writes_disabled",
+                error_message="Write operations are disabled.",
+                error_recovery="Set FAMILYWALL_ENABLE_WRITES=true to enable writes.",
+            )
+
+        try:
+            principal, ctx = await self._context_resolver.resolve()
+            timezone = ctx.authenticated_member_timezone
+            try:
+                new_start = _parse_date_or_time(start, timezone) if start else None
+                new_end = _parse_date_or_time(end, timezone) if end else None
+                new_reminders = _parse_reminders(reminders) if reminders is not None else None
+            except ValueError as exc:
+                return ErrorResponse(
+                    error_code="invalid_argument",
+                    error_message=str(exc),
+                    error_recovery=(
+                        "Use 'YYYY-MM-DDTHH:MM' for a timed event, 'YYYY-MM-DD' for an "
+                        "all-day event."
+                    ),
+                )
+
+            service = CalendarWriteService(write_transport(self._session_pool, principal))
+            result = await service.update_event(
+                principal,
+                event_id=event_id,
+                title=title,
+                start=new_start,
+                end=new_end,
+                location=location,
+                description=description,
+                reminders=new_reminders,
+                timezone=timezone,
+                operation_id=idempotency_key or str(uuid.uuid4()),
+                receipt_repository=self._receipt_repository,
+                family_id=ctx.family_context.family_id,
+                calendar_id=ctx.family_context.calendar_id,
+            )
+            return CalendarEventWriteResponse(
+                family_name=ctx.discovered_family.name,
+                outcome=result.outcome.value,
+                event_id=result.event_id,
+            )
+        except FamilyWallError as exc:
+            return ErrorResponse(
+                error_code=exc.info.code,
+                error_message=exc.info.message,
+                error_recovery=exc.info.recovery,
+            )
+
+    async def _delete_calendar_event(
+        self,
+        event_id: str,
+        date: str,
+        idempotency_key: str | None = None,
+    ) -> CalendarEventWriteResponse | ErrorResponse:
+        """Delete one single, non-recurring family calendar event.
+
+        If writes are disabled, returns an error response with zero upstream calls.
+        """
+        if not self._config.enable_writes:
+            return ErrorResponse(
+                error_code="writes_disabled",
+                error_message="Write operations are disabled.",
+                error_recovery="Set FAMILYWALL_ENABLE_WRITES=true to enable writes.",
+            )
+
+        try:
+            on_date = _parse_date(date)
+        except ValueError as exc:
+            return ErrorResponse(
+                error_code="invalid_argument",
+                error_message=str(exc),
+                error_recovery="Give the day the event is on as 'YYYY-MM-DD'.",
+            )
+
+        try:
+            principal, ctx = await self._context_resolver.resolve()
+            service = CalendarWriteService(write_transport(self._session_pool, principal))
+            result = await service.delete_event(
+                principal,
+                event_id=event_id,
+                on_date=on_date,
+                timezone=ctx.authenticated_member_timezone,
+                operation_id=idempotency_key or str(uuid.uuid4()),
+                receipt_repository=self._receipt_repository,
+                family_id=ctx.family_context.family_id,
+                calendar_id=ctx.family_context.calendar_id,
+            )
+            return CalendarEventWriteResponse(
+                family_name=ctx.discovered_family.name,
+                outcome=result.outcome.value,
+                event_id=result.event_id,
+            )
+        except FamilyWallError as exc:
+            return ErrorResponse(
+                error_code=exc.info.code,
+                error_message=exc.info.message,
+                error_recovery=exc.info.recovery,
+            )
+
     async def _resolve_assignment(
         self,
         principal: Principal,
@@ -979,6 +1136,22 @@ def _parse_reminders(values: list[str]) -> tuple[Reminder, ...]:
             )
         parsed.append(Reminder(unit=unit, value=int(match.group(1))))  # type: ignore[arg-type]
     return tuple(parsed)
+
+
+def _parse_local_datetime(value: str, timezone: str) -> datetime_:
+    """Parse 'YYYY-MM-DDTHH:MM[:SS]'; a value without an offset is local time."""
+    if "T" not in value:
+        raise ValueError(f"Expected a date and time, got {value!r}.")
+    try:
+        parsed = datetime_.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"Expected 'YYYY-MM-DDTHH:MM', got {value!r}.") from exc
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=ZoneInfo(timezone))
+
+
+def _parse_date_or_time(value: str, timezone: str) -> date | datetime_:
+    """A bare date for all-day events, or a local date and time for timed ones."""
+    return _parse_local_datetime(value, timezone) if "T" in value else _parse_date(value)
 
 
 def _invalid_event(detail: str) -> ErrorResponse:

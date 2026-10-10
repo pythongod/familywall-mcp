@@ -329,7 +329,7 @@ reminder reads back as `reminderList: [{localId, reminderType, reminderUnit,
 reminderValue}]`, plus `reminder` (the first entry), which maps directly onto
 the indexed write fields.
 
-### `evtupdate` — live-verified as a patch, not exposed yet
+### `evtupdate` — live-verified as a patch
 
 The web form sends `partnerScope=Family`, `option=All`,
 `calendarId=calendar/{family_id}`, `metaId=<eventId>`, then the complete create
@@ -349,13 +349,71 @@ changed. Not observed: `evtupdate` on an all-day event, and any recurring event.
 whole series. `$empty` appears to be a sentinel for an omitted value; its exact
 meaning is `source-only`.
 
-### `evtdelete` — live-verified for non-recurring events, not exposed
+### `evtdelete` — live-verified for non-recurring events
 
 The web app sends `partnerScope=Family`, `option=All`, `eventId=<eventId>`. The
 reference client's `eventId.0=<eventId>` is also accepted. Both returned
 `"true"`, and the event was absent on readback (2026-09-25; four events deleted
-this way). No tool exposes it. On a recurring occurrence `option=All` remains
-unobserved and plausibly deletes the whole series.
+this way). `delete_calendar_event` exposes it for single events only (see
+below). On a recurring occurrence `option=All` targets the whole series, as
+`evtdeleteoption` confirms.
+
+
+### Single-event update and delete — live-verified 2026-09-23/29
+
+`update_calendar_event` and `delete_calendar_event` act on single,
+non-recurring events. Both were live-verified against a real account
+(Europe/Berlin) on 2026-09-23 and 2026-09-29, and again on 2026-10-10.
+Recurring series stay excluded.
+
+| Endpoint | Fields | Status |
+| --- | --- | --- |
+| `evtdelete` | `partnerScope=Family`, `option=All`, `eventId.0` | **live-verified** for single events; returns `"true"` and the event is absent from a re-read. Refused client-side for any series occurrence or series exception |
+| `evtupdate` | `partnerScope=Family`, `option=All`, `metaId`, plus **only the changed fields** | **live-verified 2026-09-29** as a partial update for single events. See below |
+| `evtget` | `eventId` | **live-verified**: one event by id, including `reminderList` |
+| `evtupdateoption` / `evtdeleteoption` | `eventId` | **live-verified**: `["All"]` for a single event, `["All", "OnlyOne", "OnlyAfter"]` for a series occurrence |
+
+### Time encoding (live evidence)
+
+- **A time without an offset is read as UTC; `timeZone` does not shift it.**
+  `startDate=2026-09-30T14:00:00` with `timeZone=Europe/Berlin` was stored as
+  `2026-09-30T14:00:00.000Z` (16:00 in Berlin). Timed creates send the local
+  time with its offset (above), which stores the same instant; `evtupdate`
+  sends the offset-less UTC wall-clock instead (14:00 CEST goes out as
+  `2026-09-30T12:00:00`), verified to store the intended instant.
+- **All-day** takes `allDay=true` with `<date>T00:00:00` to `<last date>T23:59:59`
+  and is stored as the same values with `.000Z`, matching the read encoding. The
+  web app omits `timeZone` here (probe A1); sending it was also accepted.
+
+### Update semantics (live evidence, 2026-09-29)
+
+- **evtupdate is partial.** Fields that are not sent keep their values. A
+  title-only update, then a start/end-only update, then clearing `where` with an
+  empty string each left the event's reminder (`SNOOZE/MINUTE/30`), description,
+  sharing and privacy unchanged. This matters: 102 of 109 single events in the
+  verified account carry reminders, and the reference client's full-replacement
+  update (which sends `reminderList=$empty`) would have erased them.
+- The FamilyWall web app's own edit form sends only `text`, `startDate`,
+  `endDate`, `where`, `description`, `calendarId` and `picture`, consistent with
+  partial semantics.
+- Times use the offset-less UTC wall-clock described above.
+- **The server states which options it offers.** `evtupdateoption` and
+  `evtdeleteoption` return `["All"]` for a single event and add `OnlyOne` and
+  `OnlyAfter` for a series occurrence, confirming that `option=All` on an
+  occurrence targets the whole series. Update and delete require exactly
+  `["All"]`, in addition to the client-side recurrence check.
+- Reminders are encoded like the web app's serialiser flattens nested values:
+  `reminderList.0.reminderType=SNOOZE`, `reminderList.0.reminderUnit=MINUTE`,
+  `reminderList.0.reminderValue=30` (verified on create).
+
+### Delete safety
+
+`option=All` is the only documented option and plausibly removes a whole series,
+so the client looks the event up on its local day first, asks `evtdeleteoption`
+and refuses before any delete unless it returns exactly `["All"]`, or when `recurrency` is not `NONE`, `recurrencyExceptionOfId` is present, or
+`eventMasterId` differs from `eventId`. Checked read-only against 98 real events:
+all 58 series occurrences are refused and only the 40 single events are eligible.
+Deleting a series occurrence live was deliberately not attempted.
 
 ## Test cases the port must satisfy
 

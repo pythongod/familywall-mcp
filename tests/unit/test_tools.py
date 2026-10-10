@@ -1595,3 +1595,44 @@ async def test_create_calendar_event_rejects_bad_reminder_with_zero_calls() -> N
     assert isinstance(result, ErrorResponse)
     assert result.error_code == "invalid_event"
     assert pool.calls == []
+
+
+async def test_delete_calendar_event_refused_when_writes_disabled() -> None:
+    registry, pool = create_registry(_writes_config(False), create_discovered_family())
+
+    result = await registry._delete_calendar_event("event/1_5", "2026-09-25")
+
+    assert isinstance(result, ErrorResponse)
+    assert result.error_code == "writes_disabled"
+    assert pool.calls == []
+
+
+async def test_delete_calendar_event_rejects_bad_date_with_zero_calls() -> None:
+    registry, pool = create_registry(_writes_config(True), create_discovered_family())
+
+    result = await registry._delete_calendar_event("event/1_5", "25.09.2026")
+
+    assert isinstance(result, ErrorResponse)
+    assert result.error_code == "invalid_argument"
+    assert pool.calls == []
+
+
+async def test_update_calendar_event_refused_when_writes_disabled() -> None:
+    registry, pool = create_registry(_writes_config(False), create_discovered_family())
+
+    result = await registry._update_calendar_event("event/1_5", title="Neu")
+
+    assert isinstance(result, ErrorResponse)
+    assert result.error_code == "writes_disabled"
+    assert pool.calls == []
+
+
+@pytest.mark.parametrize("start", ["07.10.2026", "2026-10-07 14:00x", "morgen"])
+async def test_update_calendar_event_rejects_bad_times_with_zero_calls(start: str) -> None:
+    registry, pool = create_registry(_writes_config(True), create_discovered_family())
+
+    result = await registry._update_calendar_event("event/1_5", start=start)
+
+    assert isinstance(result, ErrorResponse)
+    assert result.error_code == "invalid_argument"
+    assert pool.calls == []

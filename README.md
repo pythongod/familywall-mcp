@@ -49,7 +49,7 @@ a migrated database.
 
 ## What it does
 
-Ten MCP tools are exposed today:
+Twelve MCP tools are exposed today:
 
 | Tool | Type | Description |
 | --- | --- | --- |
@@ -63,6 +63,8 @@ Ten MCP tools are exposed today:
 | `set_list_item_assignees` | write | Change only who an existing list item is assigned to; nothing else about the item changes |
 | `create_calendar_event` | write | Add a timed or all-day, one-off event to the family calendar, assigned to everyone or to named members, with the member's own default reminder unless reminders are given, and confirm it by reading it back |
 | `set_calendar_event_attendees` | write | Change only who an existing, ordinary, one-off, timed family-calendar event is assigned to, and confirm nothing else about it changed |
+| `update_calendar_event` | write | Change the title, time, location, description or reminders of a single, non-recurring event; only the given fields change |
+| `delete_calendar_event` | write | Delete a single, non-recurring event; refuses anything in a recurring series |
 
 A few things worth knowing about how these behave:
 
@@ -119,7 +121,13 @@ A few things worth knowing about how these behave:
   and is `confirmed` only when a readback shows the new attendees and every
   other field (title, time, zone, location, description, recurrence, calendar,
   reminder) unchanged; `mismatched` means something else also changed.
-- There is no delete or move tool yet, and item `quantity` cannot be read back
+- **`update_calendar_event` and `delete_calendar_event` touch single events
+  only.** Before writing, both ask FamilyWall which options it offers for the
+  event and refuse anything but a plain single event, so a series is never
+  changed or removed by accident. `update_calendar_event` is partial: fields
+  you leave out (including attendees and, unless given, reminders) are kept;
+  `reminders` replaces the whole list. Deleting needs the event's local day.
+- There is no move tool yet, and item `quantity` cannot be read back
   (FamilyWall's API doesn't return it).
 - **Assignment is shown by name, never by account ID.** `get_week_overview` and
   `get_list_items` report `assigned_to` (names), `assigned_to_everyone`, and an

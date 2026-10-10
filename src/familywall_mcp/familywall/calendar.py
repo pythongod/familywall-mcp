@@ -13,7 +13,7 @@ Key design principles:
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Literal
 
 from pydantic import Field
@@ -655,9 +655,104 @@ def parse_created_event_id(payload: object) -> str | None:
     return None
 
 
+# evtcreate and evtupdate read a time without an offset as UTC; the `timeZone`
+# field does not shift it. Live evidence (2026-09-23): "2026-09-30T14:00:00" sent
+# with timeZone=Europe/Berlin was stored as 2026-09-30T14:00:00.000Z. Updates
+# therefore send timed instants as their UTC wall-clock.
+_WALL_CLOCK = "%Y-%m-%dT%H:%M:%S"
+
+
+def utc_wall_clock(moment: datetime) -> str:
+    """Render an aware datetime as the offset-less UTC wall-clock evtupdate expects.
+
+    Raises:
+        ValueError: If `moment` is naive.
+    """
+    if moment.tzinfo is None:
+        raise ValueError("datetime must be timezone-aware")
+    return moment.astimezone(UTC).strftime(_WALL_CLOCK)
+
+
 def all_day_wire_bounds(start_date: date, end_date: date) -> tuple[str, str]:
     """The midnight-to-23:59:59 bounds for an all-day span; `end_date` is inclusive."""
     return f"{start_date.isoformat()}T00:00:00", f"{end_date.isoformat()}T23:59:59"
+
+
+def build_delete_event_fields(event_id: str) -> dict[str, str]:
+    """Build evtdelete fields.
+
+    `option=All` on a series occurrence removes the whole series. Callers must
+    establish that the target is a single, non-recurring event before sending this.
+
+    Raises:
+        ValueError: If `event_id` is not an event identifier.
+    """
+    if not event_id.startswith("event/"):
+        raise ValueError("event_id must start with 'event/'")
+    return {
+        "partnerScope": "Family",
+        "option": "All",
+        "eventId.0": event_id,
+    }
+
+
+# Keys a caller-supplied change may never set: they select the target and scope.
+_UPDATE_ENVELOPE = frozenset({"partnerScope", "option", "metaId", "eventId"})
+
+
+def build_update_event_fields(event_id: str, changes: dict[str, str]) -> dict[str, str]:
+    """Build evtupdate fields for a partial update of one event.
+
+    evtupdate only changes the fields it is sent. Live evidence (2026-09-29): a
+    title-only and then a times-only update left the reminder, location,
+    description, sharing and privacy of a test event untouched. `option=All` is
+    the only option the server offers for a single event; callers must confirm
+    the event is single before sending this.
+
+    Raises:
+        ValueError: For a non-event id, no changes, or a change that names an
+            envelope key.
+    """
+    if not event_id.startswith("event/"):
+        raise ValueError("event_id must start with 'event/'")
+    if not changes:
+        raise ValueError("an update needs at least one change")
+    if _UPDATE_ENVELOPE & changes.keys():
+        raise ValueError("changes may not set the update envelope")
+    return {"partnerScope": "Family", "option": "All", "metaId": event_id, **changes}
+
+
+def build_event_id_fields(event_id: str) -> dict[str, str]:
+    """Fields for the single-event reads evtget, evtupdateoption and evtdeleteoption."""
+    return {"partnerScope": "Family", "eventId": event_id}
+
+
+def parse_single_event(payload: object) -> CalendarEvent:
+    """Parse one event object, as evtget returns it.
+
+    Raises:
+        MalformedPayloadError: If the payload is not a well-formed event.
+    """
+    if not isinstance(payload, dict):
+        raise MalformedPayloadError()
+    try:
+        return _parse_single_event(payload)
+    except (KeyError, ValueError, TypeError) as exc:
+        raise MalformedPayloadError() from exc
+
+
+def parse_event_options(payload: object) -> tuple[str, ...]:
+    """Parse the option list evtupdateoption / evtdeleteoption return.
+
+    A single event yields ("All",); a series occurrence also offers "OnlyOne"
+    and "OnlyAfter" (live evidence, 2026-09-29).
+
+    Raises:
+        MalformedPayloadError: If the payload is not a list of strings.
+    """
+    if not isinstance(payload, list) or not all(isinstance(o, str) for o in payload):
+        raise MalformedPayloadError()
+    return tuple(payload)
 
 
 def reminder_fields(reminders: tuple[Reminder, ...]) -> dict[str, str]:
