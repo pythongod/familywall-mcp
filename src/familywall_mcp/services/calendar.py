@@ -37,7 +37,13 @@ from familywall_mcp.familywall.calendar import (
     parse_created_event_id,
     parse_events,
 )
-from familywall_mcp.models import DomainModel, FamilyContext, OperationReceipt, Principal
+from familywall_mcp.models import (
+    DomainModel,
+    FamilyContext,
+    OperationReceipt,
+    Principal,
+    ReceiptStatus,
+)
 from familywall_mcp.services.members import ResolvedAssignment
 from familywall_mcp.services.ranges import LocalRange, resolve_days, resolve_week
 
@@ -392,7 +398,7 @@ class CalendarService:
             return _replay_create(existing, payload_hash)
 
         async def record(
-            status: Literal["pending", "succeeded", "unknown", "rejected"],
+            status: ReceiptStatus,
             result: CreateEventResult | None = None,
             upstream_id: str | None = None,
         ) -> None:
@@ -575,7 +581,7 @@ class CalendarService:
             return _replay_set_attendees(existing, payload_hash, event_id)
 
         async def record(
-            status: Literal["pending", "succeeded", "unknown", "rejected"],
+            status: ReceiptStatus,
             result: SetAttendeesResult | None = None,
             upstream_id: str | None = None,
         ) -> None:

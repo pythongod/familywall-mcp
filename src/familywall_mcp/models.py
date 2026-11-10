@@ -70,6 +70,14 @@ class ResponseEnvelope(DomainModel):
         return self
 
 
+ReceiptStatus = Literal["pending", "succeeded", "unknown", "rejected"]
+"""Where one write stands. Recorded as ``pending`` before the upstream call, then
+settled once: ``succeeded`` (FamilyWall acknowledged it), ``rejected`` (FamilyWall
+refused it, nothing changed) or ``unknown`` (the outcome was lost, so a replay with
+the same operation id must not blindly repeat the write). The SQLite schema's
+CHECK constraint lists the same four values."""
+
+
 class OperationReceipt(DomainModel):
     """A local mutation receipt, with no promise of remote exactly-once delivery."""
 
@@ -86,6 +94,6 @@ class OperationReceipt(DomainModel):
     ]
     operation_id: str = Field(min_length=1, max_length=200)
     payload_hash: str = Field(min_length=1, max_length=128)
-    status: Literal["pending", "succeeded", "unknown", "rejected"]
+    status: ReceiptStatus
     upstream_id: str | None = None
     expires_at: datetime

@@ -37,7 +37,7 @@ from familywall_mcp.familywall.lists import (
     parse_list_items,
     parse_list_summaries,
 )
-from familywall_mcp.models import DomainModel, OperationReceipt, Principal
+from familywall_mcp.models import DomainModel, OperationReceipt, Principal, ReceiptStatus
 from familywall_mcp.services.members import ResolvedAssignment
 
 if TYPE_CHECKING:
@@ -321,7 +321,7 @@ class ListService:
             return _replay_add_item(existing_receipt, payload_hash), ()
 
         async def record(
-            status: Literal["pending", "succeeded", "unknown", "rejected"],
+            status: ReceiptStatus,
             upstream_id: str | None = None,
         ) -> None:
             await receipt_repository.put(
@@ -503,7 +503,7 @@ class ListService:
             raise UnsupportedConfigurationError()
 
         async def record(
-            status: Literal["pending", "succeeded", "unknown", "rejected"],
+            status: ReceiptStatus,
             upstream_id: str | None = None,
         ) -> None:
             await receipt_repository.put(
